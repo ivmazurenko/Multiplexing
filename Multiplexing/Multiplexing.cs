@@ -1,65 +1,15 @@
+using System.Collections.Concurrent;
+
 namespace Interview;
 
-/*
- * Наше приложение общается с удаленным сервисом: шлет запросы и получает ответы. С удаленным сервером
- * установлено единственное соединение, по которому мы шлем запросы и получаем ответы. Каждый запрос содержит Id (GUID),
- * ответ на запрос содержит его же. Ответы на запросы могут приходить в произвольном порядке и с произвольными задержками.
- * Сервер может иметь ошибки в реализации и отправить один ответ несколько раз.
- * Нам необходимо реализовать интерфейс, который абстрагирует факт такого мультиплексирования.
- * Реализация `IRequestProcessor.SendAsync` обязана быть потокобезопасной.
- *
- * У нас есть готовая реализация интерфейсов `ILowLevelNetworkAdapter` и `IHighLevelNetworkAdapter`
- */
-
-// запрос, остальные поля не интересны
-public sealed record Request(Guid Id);
-
-// ответ, остальные поля не интересны
-public sealed record Response(Guid Id);
-
-// низкоуровневый адаптер, можно делать одновременный вызов ReadAsync и WriteAsync
-// можно считать это абстракцией над полнодуплексным сокетом
-// ----
-// важное предположение о реализации: низкоуровневый сетевой интерфейс, который сделает реконнект,
-// но при отмене Read/Write скорее всего просто оборвет текущее активное соединение и все незавершенные
-// запросы будут потеряны
-public interface ILowLevelNetworkAdapter
-{
-    // вычитывает очередной ответ, нельзя делать несколько одновременных вызовов ReadAsync
-    Task<Response> ReadAsync(CancellationToken cancellationToken);
-
-    // отправляет запрос, нельзя делать несколько одновременных вызовов WriteAsync
-    Task WriteAsync(Request request, CancellationToken cancellationToken);
-}
-
-// интерфейс, который надо реализовать
-public interface IRequestProcessor
-{
-    // Запускает обработчик, возвращаемый Task завершается после окончания инициализации
-    // гарантированно вызывается 1 раз при инициализации приложения
-    Task StartAsync(CancellationToken cancellationToken);
-
-    // выполняет мягкую остановку, т.е. завершается после завершения обработки всех запросов
-    // гарантированно вызывается 1 раз при остановке приложения
-    Task StopAsync(CancellationToken cancellationToken);
-
-    // выполняет запрос, этот метод будет вызываться в приложении множеством потоков одновременно
-    // При отмене CancellationToken не обязательно гарантировать то, что мы не отправим запрос на сервер, но клиент должен получить отмену задачи
-    Task<Response> SendAsync(Request request, CancellationToken cancellationToken);
-}
-
-// сложный вариант задачи:
-// 1. можно пользоваться только ILowLevelNetworkAdapter
-// 2. нужно реализовать обработку cancellationToken
-// 3. нужно реализовать StopAsync, который дожидается получения ответов на уже переданные
-//    запросы (пока не отменен переданный в `StopAsync` `CancellationToken`)
-// 4. нужно реализовать настраиваемый таймаут: если ответ на конкретный запрос не получен за заданный промежуток
-//    времени - отменяем задачу, которая вернулась из `SendAsync`. В том числе надо рассмотреть ситуацию,
-//    что ответ на запрос не придет никогда, глобальный таймаут при этом должен отработать и не допустить утечки памяти
 public sealed class ComplexRequestProcessor : IRequestProcessor
 {
     private readonly ILowLevelNetworkAdapter _networkAdapter;
+
+    private readonly ConcurrentDictionary<Guid, TaskCompletionSource<Response>> _pendingRequestIds = new();
     private readonly TimeSpan _requestTimeout;
+
+    private CancellationTokenSource? _instanceCancellationTokenSource;
 
     public ComplexRequestProcessor(ILowLevelNetworkAdapter networkAdapter, TimeSpan requestTimeout)
     {
@@ -70,18 +20,62 @@ public sealed class ComplexRequestProcessor : IRequestProcessor
         _requestTimeout = requestTimeout;
     }
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        _instanceCancellationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        await Task.Run(ProcessPendingRequestsAsync, cancellationToken);
+
+        async Task ProcessPendingRequestsAsync()
+        {
+            try
+            {
+                while (!_instanceCancellationTokenSource.Token.IsCancellationRequested)
+                {
+                    var response = await _networkAdapter.ReadAsync(_instanceCancellationTokenSource.Token);
+
+                    if (_pendingRequestIds.TryRemove(response.Id, out var tcs))
+                        tcs.TrySetResult(response);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+        }
     }
 
-    public Task StopAsync(CancellationToken cancellationToken)
+    public async Task StopAsync(CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        _instanceCancellationTokenSource?.Cancel();
+        var tasks = _pendingRequestIds.Values.Select(s => s.Task).ToList();
+        await Task.WhenAll(tasks);
+        _instanceCancellationTokenSource?.Dispose();
     }
 
-    public Task<Response> SendAsync(Request request, CancellationToken cancellationToken)
+    public async Task<Response> SendAsync(Request request, CancellationToken cancellationToken)
     {
-        throw new NotImplementedException();
+        var tcs = new TaskCompletionSource<Response>();
+        _pendingRequestIds.TryAdd(request.Id, tcs);
+
+        var linkedTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+        try
+        {
+            var realTask = _networkAdapter.WriteAsync(request, linkedTokenSource.Token);
+            var delayTask = Task.Delay(_requestTimeout, cancellationToken);
+            var completedTask = await Task.WhenAny(realTask, delayTask);
+            if (completedTask == delayTask)
+            {
+                linkedTokenSource.Cancel();
+                linkedTokenSource.Dispose();
+                throw new TimeoutException("Request timed out.");
+            }
+
+            await realTask;
+            return tcs.Task.Result;
+        }
+        finally
+        {
+            _pendingRequestIds.TryRemove(request.Id, out _);
+        }
     }
 }

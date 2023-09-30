@@ -4,7 +4,12 @@
         <TargetFramework>net7.0</TargetFramework>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
-        <RootNamespace>Interview</RootNamespace>
+        <OutputType>Exe</OutputType>
     </PropertyGroup>
+
+
+    <ItemGroup>
+      <ProjectReference Include="..\Multiplexing\Multiplexing.csproj" />
+    </ItemGroup>
 
 </Project>
