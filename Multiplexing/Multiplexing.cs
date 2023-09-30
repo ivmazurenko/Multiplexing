@@ -32,16 +32,6 @@ public interface ILowLevelNetworkAdapter
     Task WriteAsync(Request request, CancellationToken cancellationToken);
 }
 
-// высокоуровневый адаптер с внутренней очередью отправки сообщений, наподобие клиента RabbitMQ или Kafka
-public interface IHighLevelNetworkAdapter
-{
-    // ставит очередной запрос в очередь на отправку. false - очередь переполнена, запрос не будет отправлен
-    bool TryEnqueueWrite(Request request, CancellationToken cancellationToken);
-
-    // вычитывает очередной ответ, нельзя делать несколько одновременных вызовов ReadAsync
-    Task<Response> ReadAsync(CancellationToken cancellationToken);
-}
-
 // интерфейс, который надо реализовать
 public interface IRequestProcessor
 {
@@ -56,70 +46,6 @@ public interface IRequestProcessor
     // выполняет запрос, этот метод будет вызываться в приложении множеством потоков одновременно
     // При отмене CancellationToken не обязательно гарантировать то, что мы не отправим запрос на сервер, но клиент должен получить отмену задачи
     Task<Response> SendAsync(Request request, CancellationToken cancellationToken);
-}
-
-//////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-// простой вариант задачи:
-// 1. Можно пользоваться IHighLevelNetworkAdapter, т.е. переложить очередь отправки на NetworkAdapter
-// 2. Можно не реализовывать обработку `CancellationToken` в методах `IRequestProcessor`
-// 3. Можно не реализовывать `IRequestProcessor.StopAsync`
-public sealed class SimpleRequestProcessor : IRequestProcessor
-{
-    private readonly IHighLevelNetworkAdapter _networkAdapter;
-
-    public SimpleRequestProcessor(IHighLevelNetworkAdapter networkAdapter)
-    {
-        _networkAdapter = networkAdapter;
-    }
-
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        // cancellationToken можно не использовать
-        throw new NotImplementedException();
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        // этот метод можно не реализовывать
-        return Task.CompletedTask;
-    }
-
-    public Task<Response> SendAsync(Request request, CancellationToken cancellationToken)
-    {
-        // cancellationToken можно не использовать
-        throw new NotImplementedException();
-    }
-}
-
-// средний вариант задачи:
-// 1. можно пользоваться только ILowLevelNetworkAdapter
-// 2. нужно реализовать обработку cancellationToken
-// 3. можно не реализовывать `IRequestProcessor.StopAsync`
-public sealed class MediumRequestProcessor : IRequestProcessor
-{
-    private readonly ILowLevelNetworkAdapter _networkAdapter;
-
-    public MediumRequestProcessor(ILowLevelNetworkAdapter networkAdapter)
-    {
-        _networkAdapter = networkAdapter;
-    }
-
-    public Task StartAsync(CancellationToken cancellationToken)
-    {
-        throw new NotImplementedException();
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        // этот метод можно не реализовывать
-        return Task.CompletedTask;
-    }
-
-    public Task<Response> SendAsync(Request request, CancellationToken cancellationToken)
-    {
-        throw new NotImplementedException();
-    }
 }
 
 // сложный вариант задачи:
