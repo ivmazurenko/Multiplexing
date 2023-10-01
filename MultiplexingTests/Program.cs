@@ -21,8 +21,14 @@ public class Tests
         new Thread(() => SendRequestsInLoop(processor, cts.Token)).Start();
         new Thread(() => SendRequestsInLoop(processor, cts.Token)).Start();
 
-        await Task.Delay(TimeSpan.FromMinutes(1), cts.Token);
+        await Task.Delay(10_000, cts.Token);
 
+        new Thread(async () =>
+        {
+            await Task.Delay(1_000);
+            cts.Cancel();
+            cts.Dispose();
+        }).Start();
         await processor.StopAsync(cts.Token);
         processor = null;
         Console.WriteLine("Stopped");
@@ -61,16 +67,19 @@ public class Tests
 
         public async Task<Response> ReadAsync(CancellationToken token)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next() % _requestMaxMilliseconds), token);
+            await Task.Delay(Random.Shared.Next() % _requestMaxMilliseconds, token);
             var item = blockingCollection.Take();
             return new Response(item.Id);
         }
 
         public async Task WriteAsync(Request request, CancellationToken token)
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(Random.Shared.Next() % _requestMaxMilliseconds), token);
+            await Task.Delay(Random.Shared.Next() % _requestMaxMilliseconds, token);
 
             blockingCollection.Add(request, token);
+            if (Random.Shared.Next() % 2 == 0)
+                // simulate wrong behavior when server can complete request more then 1 times
+                blockingCollection.Add(request, token);
         }
     }
 }

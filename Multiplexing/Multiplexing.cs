@@ -47,7 +47,12 @@ public sealed class ComplexRequestProcessor : IRequestProcessor
     {
         _instanceCancellationTokenSource?.Cancel();
         var tasks = _pendingRequestIds.Values.Select(s => s.Task).ToList();
-        await Task.WhenAll(tasks);
+
+        var cancelTask = Task.Delay(Timeout.Infinite, cancellationToken);
+        var allUnfinishedTasks = Task.WhenAll(tasks);
+
+        await Task.WhenAny(cancelTask, allUnfinishedTasks);
+        _pendingRequestIds.Clear();
         _instanceCancellationTokenSource?.Dispose();
     }
 
